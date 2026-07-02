@@ -1,0 +1,101 @@
+name: manual-linux-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag, for example 1.7.7"
+        required: true
+        type: string
+      release_name:
+        description: "Release title. Defaults to tag_name when empty."
+        required: false
+        type: string
+      draft:
+        description: "Create the release as a draft"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            build_target: x86_64
+            asset_name: ttyd-linux-x64
+          - arch: arm64
+            build_target: aarch64
+            asset_name: ttyd-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential cmake curl file libtool
+
+      - name: Cross build ttyd
+        env:
+          BUILD_TARGET: ${{ matrix.build_target }}
+        run: ./scripts/cross-build.sh
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp build/ttyd "dist/${{ matrix.asset_name }}"
+          chmod +x "dist/${{ matrix.asset_name }}"
+          file "dist/${{ matrix.asset_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find dist -type f -name 'ttyd-linux-*' -exec cp {} release/ \;
+          cd release
+          sha256sum ttyd-linux-* > SHA256SUMS
+          ls -lh
+
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ inputs.tag_name }}
+          commit: ${{ github.sha }}
+          name: ${{ inputs.release_name || inputs.tag_name }}
+          artifacts: release/*
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          generateReleaseNotes: true
